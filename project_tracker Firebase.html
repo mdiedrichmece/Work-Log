@@ -1,0 +1,255 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Project Tracker</title>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-storage-compat.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
+    .tabs { display: flex; background: #333; color: white; }
+    .tab { padding: 10px 20px; cursor: pointer; }
+    .tab.active { background: #555; }
+    .board { display: none; padding: 10px; }
+    .board.active { display: block; }
+    .bucket-row { display: flex; margin-bottom: 10px; }
+    .bucket { flex: 1; border: 1px solid #ccc; margin: 5px; padding: 5px; min-height: 100px; background: #f9f9f9; }
+    .bucket h3 { margin-top: 0; }
+    .task { background: white; border: 1px solid #aaa; margin: 5px 0; padding: 5px; cursor: pointer; }
+    .task .heading { font-weight: bold; }
+    .task .subheading { font-size: 0.9em; color: #555; }
+    .task .coating { color: blue; }
+    #modal { display: none; position: fixed; top: 10%; left: 50%; transform: translateX(-50%); background: white; border: 1px solid #333; padding: 20px; z-index: 1000; width: 300px; }
+    #overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 999; }
+    #management-tools { display: none; margin-top: 10px; }
+    input, select { width: 100%; margin-bottom: 10px; }
+    button { margin-right: 5px; }
+  </style>
+</head>
+<body>
+  <div class="tabs">
+    <div class="tab active" data-tab="Engineering">Engineering</div>
+    <div class="tab" data-tab="Vane">Vane</div>
+    <div class="tab" data-tab="Mechanical">Mechanical</div>
+    <div class="tab" data-tab="Management">Management</div>
+  </div>
+
+  <div id="Engineering" class="board active"></div>
+  <div id="Vane" class="board"></div>
+  <div id="Mechanical" class="board"></div>
+  <div id="Management" class="board">
+    <input type="password" id="password" placeholder="Enter password to unlock tools" />
+    <div id="management-tools">
+      <button onclick="openModal()">Add New Task</button>
+      <button onclick="exportCSV()">Export to CSV</button>
+      <input type="file" id="csvFile" accept=".csv" onchange="importCSV(event)" />
+    </div>
+  </div>
+
+  <div id="overlay"></div>
+  <div id="modal">
+    <h3>Edit Task</h3>
+    <label>Project Number</label><input id="projectNumber" />
+    <label>Customer Name</label><input id="customerName" />
+    <label>Component Type</label><input id="componentType" />
+    <label>Due Date</label><input type="date" id="dueDate" />
+    <label>Percent Complete</label><input type="number" id="percentComplete" />
+    <label>Coating Type</label><input id="coatingType" />
+    <label>Current Status</label><input id="currentStatus" />
+    <label>Department</label>
+    <select id="department">
+      <option>Engineering</option>
+      <option>Vane</option>
+      <option>Mechanical</option>
+    </select>
+    <label>Bucket</label>
+    <select id="bucket">
+      <option>Inspection – Not Working</option>
+      <option>Inspection – Working</option>
+      <option>WQP</option>
+      <option>Not Working – Not Ready</option>
+      <option>Not Working – Ready</option>
+      <option>Working</option>
+      <option>Completed</option>
+    </select>
+    <label><input type="checkbox" id="received" /> Received</label>
+    <button onclick="saveTask()">Save</button>
+    <button onclick="closeModal()">Cancel</button>
+  </div>
+
+  <script>
+    const firebaseConfig = {
+	  apiKey: "AIzaSyBhpetKTLcsMmUTTDaPAMb3HYu_4pWWYgM",
+	  authDomain: "component-work-list.firebaseapp.com",
+	  projectId: "component-work-list",
+	  storageBucket: "component-work-list.firebasestorage.app",
+	  messagingSenderId: "897133076099",
+	  appId: "1:897133076099:web:3dbcefd82bfffea86cc5b6",
+	  measurementId: "G-R35HGED899"
+	};
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+
+    const tabs = document.querySelectorAll('.tab');
+    const boards = document.querySelectorAll('.board');
+    tabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        tabs.forEach(t => t.classList.remove('active'));
+        boards.forEach(b => b.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById(tab.dataset.tab).classList.add('active');
+      });
+    });
+
+    document.getElementById('password').addEventListener('input', e => {
+      if (e.target.value === '1234') {
+        document.getElementById('management-tools').style.display = 'block';
+      }
+    });
+
+    function createBuckets(boardId) {
+      const board = document.getElementById(boardId);
+      board.innerHTML = '';
+      const rows = [
+        ["Inspection – Not Working", "Inspection – Working", "WQP"],
+        ["Not Working – Not Ready", "Not Working – Ready", "Working"],
+        ["Completed"]
+      ];
+      rows.forEach(row => {
+        const rowDiv = document.createElement('div');
+        rowDiv.className = 'bucket-row';
+        row.forEach(bucket => {
+          const bucketDiv = document.createElement('div');
+          bucketDiv.className = 'bucket';
+          bucketDiv.dataset.bucket = bucket;
+          bucketDiv.innerHTML = `<h3>${bucket}</h3>`;
+          rowDiv.appendChild(bucketDiv);
+          new Sortable(bucketDiv, {
+            group: boardId,
+            animation: 150,
+            onEnd: function (evt) {
+              const taskId = evt.item.dataset.id;
+              db.collection("tasks").doc(taskId).update({ bucket: bucket });
+            }
+          });
+        });
+        board.appendChild(rowDiv);
+      });
+    }
+
+    ["Engineering", "Vane", "Mechanical"].forEach(createBuckets);
+
+    function renderTask(doc) {
+      const data = doc.data();
+      const task = document.createElement('div');
+      task.className = 'task';
+      task.dataset.id = doc.id;
+      task.innerHTML = `
+        <div class="heading">${data.projectNumber} - ${data.customerName} - ${data.componentType}</div>
+        <div class="subheading">${new Date(data.dueDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} - ${data.percentComplete}% ${data.coatingType ? `<span class="coating">${data.coatingType}</span>` : ''} ${!data.received ? '<span style="color:red;">Not Received</span>' : ''}</div>
+        <div>${data.currentStatus}</div>
+      `;
+      task.onclick = () => openModal(doc.id);
+      const bucketDiv = [...document.querySelectorAll(`#${data.department} .bucket`)].find(b => b.dataset.bucket === data.bucket);
+      if (bucketDiv) bucketDiv.appendChild(task);
+    }
+
+    db.collection("tasks").onSnapshot(snapshot => {
+      document.querySelectorAll('.bucket').forEach(b => b.innerHTML = `<h3>${b.dataset.bucket}</h3>`);
+      snapshot.forEach(renderTask);
+    });
+
+    let currentEditId = null;
+    function openModal(id = null) {
+      currentEditId = id;
+      document.getElementById('overlay').style.display = 'block';
+      document.getElementById('modal').style.display = 'block';
+      if (id) {
+        db.collection("tasks").doc(id).get().then(doc => {
+          const d = doc.data();
+          document.getElementById('projectNumber').value = d.projectNumber;
+          document.getElementById('customerName').value = d.customerName;
+          document.getElementById('componentType').value = d.componentType;
+          document.getElementById('dueDate').value = d.dueDate;
+          document.getElementById('percentComplete').value = d.percentComplete;
+          document.getElementById('coatingType').value = d.coatingType;
+          document.getElementById('currentStatus').value = d.currentStatus;
+          document.getElementById('department').value = d.department;
+          document.getElementById('bucket').value = d.bucket;
+          document.getElementById('received').checked = d.received;
+        });
+      } else {
+        ['projectNumber','customerName','componentType','dueDate','percentComplete','coatingType','currentStatus'].forEach(id => document.getElementById(id).value = '');
+        document.getElementById('department').value = 'Engineering';
+        document.getElementById('bucket').value = 'Inspection – Not Working';
+        document.getElementById('received').checked = false;
+      }
+    }
+
+    function closeModal() {
+      document.getElementById('overlay').style.display = 'none';
+      document.getElementById('modal').style.display = 'none';
+    }
+
+    function saveTask() {
+      const data = {
+        projectNumber: document.getElementById('projectNumber').value,
+        customerName: document.getElementById('customerName').value,
+        componentType: document.getElementById('componentType').value,
+        dueDate: document.getElementById('dueDate').value,
+        percentComplete: document.getElementById('percentComplete').value,
+        coatingType: document.getElementById('coatingType').value,
+        currentStatus: document.getElementById('currentStatus').value,
+        department: document.getElementById('department').value,
+        bucket: document.getElementById('bucket').value,
+        received: document.getElementById('received').checked
+      };
+      if (currentEditId) {
+        db.collection("tasks").doc(currentEditId).set(data);
+      } else {
+        db.collection("tasks").add(data);
+      }
+      closeModal();
+    }
+
+    function exportCSV() {
+      db.collection("tasks").get().then(snapshot => {
+        let csv = "Project Number,Customer Name,Component Type,Due Date,Percent Complete,Coating Type,Current Status,Department,Bucket,Received\n";
+        snapshot.forEach(doc => {
+          const d = doc.data();
+          csv += `${d.projectNumber},${d.customerName},${d.componentType},${d.dueDate},${d.percentComplete},${d.coatingType},${d.currentStatus},${d.department},${d.bucket},${d.received}\n`;
+        });
+        const blob = new Blob([csv], { type: 'text/csv' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = "tasks_export.csv";
+        a.click();
+      });
+    }
+
+    function importCSV(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const lines = e.target.result.split("\n").slice(1);
+        lines.forEach(line => {
+          const [projectNumber,customerName,componentType,dueDate,percentComplete,coatingType,currentStatus,department,bucket,received] = line.split(",");
+          if (!projectNumber) return;
+          db.collection("tasks").where("projectNumber", "==", projectNumber).get().then(snapshot => {
+            if (snapshot.empty) {
+              db.collection("tasks").add({
+                projectNumber, customerName, componentType, dueDate, percentComplete, coatingType, currentStatus, department, bucket, received: received === "true"
+              });
+            }
+          });
+        });
+      };
+      reader.readAsText(file);
+    }
+  </script>
+</body>
+</html>
